@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Modality, LiveServerMessage, Type } from "@google/genai";
+import { GoogleGenAI, Modality, LiveServerMessage, Type, ThinkingLevel } from "@google/genai";
 import { 
   Mic, 
   MicOff, 
@@ -604,17 +604,23 @@ export default function App() {
 
         const ai = new GoogleGenAI({ apiKey });
         
-        // Multi-turn handling for tools
-        let messages: any[] = [{ role: 'user', parts: [{ text: textToSend }] }];
+        // Build history-aware context (last 10 turns)
+        const historyContext: any[] = transcript.slice(-10).map(t => ({
+          role: t.role,
+          parts: [{ text: t.text }]
+        }));
+        
+        let messages: any[] = [...historyContext, { role: 'user', parts: [{ text: textToSend }] }];
         let finalResponse = "";
 
         // Loop for function calling (max 5 iterations)
         for (let i = 0; i < 5; i++) {
           const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
+            model: "gemini-3.1-flash-lite-preview",
             contents: messages,
             config: {
               systemInstruction: SYSTEM_INSTRUCTION,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               tools: [
                 { functionDeclarations: [
                   GET_MEDIA_CONTENT_TOOL as any, 
@@ -631,11 +637,11 @@ export default function App() {
             setIsSearching(true);
             const toolResponses = [];
             
-            // Add model's call to history
-            messages.push({ 
-              role: 'model', 
-              parts: toolCalls.map(call => ({ functionCall: call })) 
-            });
+            // Add model's complete response to history to preserve thought signatures
+            const modelContent = response.candidates?.[0]?.content;
+            if (modelContent) {
+              messages.push(modelContent);
+            }
 
             for (const call of toolCalls) {
               const result = await handleTool(call.name, call.args);
@@ -652,7 +658,20 @@ export default function App() {
             messages.push({ role: 'user', parts: toolResponses });
             setIsSearching(false);
           } else {
-            finalResponse = response.text || "لم يتم استلام رد.";
+            // Robust text extraction
+            finalResponse = response.text || "";
+            
+            // Fallback if .text is empty but parts exist
+            if (!finalResponse && response.candidates?.[0]?.content?.parts) {
+              finalResponse = response.candidates[0].content.parts
+                .filter(p => p.text)
+                .map(p => p.text)
+                .join(" ");
+            }
+
+            if (!finalResponse) {
+               finalResponse = "عذراً، لم أستطع توليد رد نصي حالياً. حاول إعادة صياغة السؤال.";
+            }
             break;
           }
         }
